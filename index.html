@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overfitting Playground</title>
+<meta name="description" content="Fit polynomials of degree 0-15 to noisy data and watch training vs validation error, then tame them with Ridge and LASSO.">
+<style>
+:root{
+  --bg:#f6f5f2; --panel:#fff; --ink:#1c1d22; --muted:#6b6e77; --line:#e5e3dd; --soft:#f0efea;
+  --train:#2f6fdb; --val:#e0742d; --true:#2a9563; --fit:#c43d6b; --zero:#b8bcc4; --shadow:0 2px 10px rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#131418; --panel:#1b1c21; --ink:#ebecef; --muted:#9a9ea8; --line:#2c2e35; --soft:#22242a; --zero:#4a4e57; --shadow:0 2px 12px rgba(0,0,0,.4);
+}}
+:root[data-theme="dark"]{ --bg:#131418; --panel:#1b1c21; --ink:#ebecef; --muted:#9a9ea8; --line:#2c2e35; --soft:#22242a; --zero:#4a4e57; --shadow:0 2px 12px rgba(0,0,0,.4); }
+*{box-sizing:border-box}
+[hidden]{display:none !important}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:1120px;margin:0 auto;padding:16px}
+h1{font-size:27px;margin:6px 0 2px} h2{font-size:16px;margin:0 0 8px}
+.muted{color:var(--muted)} .small{font-size:13px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:14px 0}
+.tabs button{font:600 15px inherit;font-family:inherit;border:0;background:none;color:var(--muted);padding:10px 14px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--fit)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:var(--shadow)}
+.grid{display:grid;grid-template-columns:1.25fr 1fr;gap:14px}
+.grid > *{min-width:0}
+.controls{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;margin-bottom:10px}
+.ctl{min-width:170px;flex:1}
+.ctl label{display:flex;justify-content:space-between;font-size:13px;font-weight:600}
+.ctl output{font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--fit)}
+select,.btn{font:inherit;font-size:14px;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:6px 10px;cursor:pointer}
+.btn.primary{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:10px 0}
+.kpi{background:var(--soft);border-radius:10px;padding:10px}
+.kpi b{display:block;font-size:22px;font-variant-numeric:tabular-nums} .kpi span{font-size:12px;color:var(--muted)}
+.verdict{border-radius:10px;padding:9px 12px;font-weight:600;font-size:14px}
+.under{background:color-mix(in srgb,var(--train) 12%,transparent);color:var(--train)}
+.right{background:color-mix(in srgb,var(--true) 14%,transparent);color:var(--true)}
+.over{background:color-mix(in srgb,var(--fit) 12%,transparent);color:var(--fit)}
+svg{width:100%;display:block} svg text{fill:var(--muted);font-size:11px;font-family:inherit}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:4px}
+.legend i{display:inline-block;width:12px;height:3px;border-radius:2px;vertical-align:middle;margin-right:5px}
+.legend b{display:inline-block;width:8px;height:8px;border-radius:50%;vertical-align:middle;margin-right:5px}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:13px}
+th,td{padding:4px 6px;border-bottom:1px solid var(--line);text-align:right}
+th:first-child,td:first-child{text-align:left}
+tr.cur td{font-weight:700;background:color-mix(in srgb,var(--fit) 10%,transparent)}
+tr.best td:first-child::after{content:" ← lowest validation";color:var(--true);font-weight:600}
+.note{font-size:13px;color:var(--muted)}
+@media (max-width:880px){ .grid{grid-template-columns:1fr} .kpis{grid-template-columns:1fr 1fr 1fr} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📈 Overfitting Playground</h1>
+  <p class="muted">Noisy points come from a hidden curve. Fit a polynomial and drag its degree: too simple <b>underfits</b>, too flexible <b>memorizes the noise</b>. Training error always falls with degree; only the <b>validation</b> error tells you when to stop. Then rein in a degree-15 polynomial with Ridge or LASSO.</p>
+
+  <div class="panel">
+    <div class="controls">
+      <div class="ctl"><label>Hidden curve</label><select id="curve"><option value="wave">Wave: sin(3x) + 0.3x</option><option value="quad">Gentle: 1 − 1.5x²</option><option value="bump">Bump: 2e^(−8x²) − 1</option></select></div>
+      <div class="ctl"><label>Training points <output id="oN"></output></label><input type="range" id="n" min="8" max="80" value="12"></div>
+      <div class="ctl"><label>Noise (σ) <output id="oS"></output></label><input type="range" id="sigma" min="0.05" max="1" step="0.05" value="0.3"></div>
+      <button class="btn primary" id="newData">🎲 New data</button>
+      <label class="small"><input type="checkbox" id="ghosts" checked> Keep previous fits as ghosts</label>
+    </div>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" data-tab="degree" aria-selected="true">1 · Degree</button>
+    <button role="tab" data-tab="ridge" aria-selected="false">2 · Ridge</button>
+    <button role="tab" data-tab="lasso" aria-selected="false">3 · LASSO</button>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="controls" id="degCtl"><div class="ctl"><label>Polynomial degree <output id="oD"></output></label><input type="range" id="deg" min="0" max="15" value="3"></div></div>
+      <div class="controls" id="regCtl" hidden>
+        <div class="ctl"><label>Degree <output id="oRD"></output></label><input type="range" id="rdeg" min="2" max="15" value="15"></div>
+        <div class="ctl"><label>λ (penalty strength) <output id="oL"></output></label><input type="range" id="lam" min="-6" max="1" step="0.05" value="-3"></div>
+      </div>
+      <svg id="plot" viewBox="0 0 560 340" role="img" aria-label="Data, hidden curve and fitted polynomial"></svg>
+      <div class="legend"><span><b style="background:var(--train)"></b>training points</span><span><b style="background:var(--val);opacity:.5"></b>validation points</span><span><i style="background:var(--true)"></i>hidden curve</span><span><i style="background:var(--fit)"></i>fitted polynomial</span><span><i style="background:var(--fit);opacity:.25"></i>fits to previous datasets</span></div>
+      <div class="kpis"><div class="kpi"><b id="kTr">–</b><span>training RMSE</span></div><div class="kpi"><b id="kVa">–</b><span>validation RMSE</span></div><div class="kpi"><b id="kX">–</b><span id="kXl">parameters</span></div></div>
+      <div class="verdict" id="verdict"></div>
+    </div>
+    <div class="panel">
+      <div id="degSide">
+        <h2>Validation curve (like HW4 4B)</h2>
+        <svg id="vcurve" viewBox="0 0 440 230" role="img" aria-label="Training and validation RMSE by degree"></svg>
+        <div class="legend"><span><i style="background:var(--train)"></i>training RMSE</span><span><i style="background:var(--val)"></i>validation RMSE</span><span><i style="background:var(--muted);height:1px"></i>noise floor σ</span></div>
+        <div style="overflow-x:auto;margin-top:8px"><table id="vtable"></table></div>
+      </div>
+      <div id="regSide" hidden>
+        <h2 id="coefTitle">Coefficients</h2>
+        <svg id="coefs" viewBox="0 0 440 200" role="img" aria-label="Coefficients"></svg>
+        <h2 style="margin-top:12px">Regularization path</h2>
+        <svg id="path" viewBox="0 0 440 210" role="img" aria-label="Coefficients as lambda grows"></svg>
+        <svg id="lcurve" viewBox="0 0 440 150" role="img" aria-label="RMSE by lambda" style="margin-top:6px"></svg>
+        <p class="note" id="regNote"></p>
+      </div>
+    </div>
+  </div>
+  <p class="note" style="margin-top:14px">x is spread uniformly on [−1, 1]. Polynomials are fit in the Legendre basis (the same curves as 1, x, x², …, just numerically stable) by least squares with Householder QR. Ridge minimizes (1/n)Σ(y − ŷ)² + λΣβⱼ² on standardized features. LASSO minimizes (1/2n)Σ(y − ŷ)² + λΣ|βⱼ| by coordinate descent with soft-thresholding, which is why its coefficients can be <i>exactly</i> zero. The intercept is never penalized. Validation uses 300 fresh points from the same curve.</p>
+</div>
+
+<script id="core">
+/* ---------- core (tested by test.mjs) ---------- */
+const OF = (() => {
+  function mulberry32(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+  function normal(rng) { let u = 0; while (u === 0) u = rng(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rng()); }
+  const CURVES = { wave: x => Math.sin(3 * x) + 0.3 * x, quad: x => 1 - 1.5 * x * x, bump: x => 2 * Math.exp(-8 * x * x) - 1 };
+  function sample(rng, n, f, sigma) { const xs = [], ys = []; for (let i = 0; i < n; i++) { const x = -1 + 2 * rng(); xs.push(x); ys.push(f(x) + sigma * normal(rng)); } return { xs, ys }; }
+  function legendre(x, d) { const P = [1]; if (d >= 1) P.push(x); for (let k = 2; k <= d; k++) P.push(((2 * k - 1) * x * P[k - 1] - (k - 1) * P[k - 2]) / k); return P; }
+  const design = (xs, d) => xs.map(x => legendre(x, d));
+  // least squares min ||A b - y|| via Householder QR (A is m x p, m >= p)
+  function lstsq(A, y) {
+    const m = A.length, p = A[0].length, R = A.map(r => r.slice()), b = y.slice();
+    for (let j = 0; j < p; j++) {
+      let norm = 0; for (let i = j; i < m; i++) norm += R[i][j] * R[i][j]; norm = Math.sqrt(norm);
+      if (norm < 1e-300) continue;
+      const alpha = R[j][j] > 0 ? -norm : norm, v = new Array(m).fill(0);
+      v[j] = R[j][j] - alpha; for (let i = j + 1; i < m; i++) v[i] = R[i][j];
+      let vv = 0; for (let i = j; i < m; i++) vv += v[i] * v[i]; if (vv < 1e-300) continue;
+      for (let c = j; c < p; c++) { let s = 0; for (let i = j; i < m; i++) s += v[i] * R[i][c]; s *= 2 / vv; for (let i = j; i < m; i++) R[i][c] -= s * v[i]; }
+      let s = 0; for (let i = j; i < m; i++) s += v[i] * b[i]; s *= 2 / vv; for (let i = j; i < m; i++) b[i] -= s * v[i];
+    }
+    const beta = new Array(p).fill(0);
+    for (let j = p - 1; j >= 0; j--) { let s = b[j]; for (let c = j + 1; c < p; c++) s -= R[j][c] * beta[c]; beta[j] = Math.abs(R[j][j]) > 1e-12 ? s / R[j][j] : 0; }
+    return beta;
+  }
+  // standardize columns 1..d on the training data (column 0 = intercept)
+  function standardizer(X) {
+    const p = X[0].length, n = X.length, mu = [0], sd = [1];
+    for (let j = 1; j < p; j++) { let m = 0; for (const r of X) m += r[j]; m /= n; let v = 0; for (const r of X) v += (r[j] - m) ** 2; mu.push(m); sd.push(Math.sqrt(v / n) || 1); }
+    return { mu, sd, apply: X2 => X2.map(r => r.map((v, j) => (j ? (v - mu[j]) / sd[j] : 1))) };
+  }
+  // OLS (with a vanishing ridge so degree >= n still gives the smooth minimum-norm interpolant)
+  function fitOLS(xs, ys, d) {
+    if (xs.length < d + 1) return fitRidge(xs, ys, d, 1e-10);           // underdetermined: near-minimum-norm interpolant
+    const X = design(xs, d), st = standardizer(X);
+    return { d, st, beta: lstsq(st.apply(X), ys), kind: "ols", lam: 0 };
+  }
+  // Ridge: min (1/n)||y - Zb||^2 + lam * sum_{j>=1} b_j^2, Z standardized; solved as an augmented least-squares problem
+  function fitRidge(xs, ys, d, lam) {
+    const X = design(xs, d), st = standardizer(X), Z = st.apply(X), n = xs.length, p = d + 1;
+    const A = Z.map(r => r.slice()), y = ys.slice();
+    for (let j = 1; j < p; j++) { const row = new Array(p).fill(0); row[j] = Math.sqrt(n * lam); A.push(row); y.push(0); }
+    return { d, st, beta: lstsq(A, y), kind: "ridge", lam };
+  }
+  // LASSO: min (1/2n)||y - Zb||^2 + lam * sum_{j>=1} |b_j| by cyclic coordinate descent (intercept = mean of y)
+  function fitLasso(xs, ys, d, lam, warm) {
+    const X = design(xs, d), st = standardizer(X), Z = st.apply(X), n = xs.length, p = d + 1;
+    const beta = warm && warm.length === p ? warm.slice() : new Array(p).fill(0);
+    const ybar = ys.reduce((a, b) => a + b) / n; beta[0] = ybar;
+    const r = ys.map((y, i) => y - Z[i].reduce((s, z, j) => s + z * beta[j], 0));
+    for (let it = 0; it < 5000; it++) {
+      let maxd = 0;
+      for (let j = 1; j < p; j++) {
+        let rho = 0; for (let i = 0; i < n; i++) rho += Z[i][j] * (r[i] + Z[i][j] * beta[j]); rho /= n;   // columns have mean 0, var 1
+        const nb = Math.sign(rho) * Math.max(0, Math.abs(rho) - lam), dlt = nb - beta[j];
+        if (dlt !== 0) { for (let i = 0; i < n; i++) r[i] -= Z[i][j] * dlt; beta[j] = nb; maxd = Math.max(maxd, Math.abs(dlt)); }
+      }
+      if (maxd < 1e-10) break;
+    }
+    return { d, st, beta, kind: "lasso", lam };
+  }
+  function predict(model, xs) { const Z = model.st.apply(design(xs, model.d)); return Z.map(r => r.reduce((s, z, j) => s + z * model.beta[j], 0)); }
+  function rmse(model, xs, ys) { const p = predict(model, xs); return Math.sqrt(p.reduce((s, v, i) => s + (v - ys[i]) ** 2, 0) / ys.length); }
+  return { mulberry32, normal, CURVES, sample, legendre, design, lstsq, standardizer, fitOLS, fitRidge, fitLasso, predict, rmse };
+})();
+if (typeof module !== "undefined") module.exports = OF;
+</script>
+
+<script>
+const $ = id => document.getElementById(id);
+let tab = "degree", seed = 7, data, val, ghosts = [], lastKey = "";
+const VAL_N = 300;
+function gen(keepGhosts) {
+  const f = OF.CURVES[$("curve").value], rng = OF.mulberry32(seed);
+  data = OF.sample(rng, +$("n").value, f, +$("sigma").value);
+  val = OF.sample(OF.mulberry32(99991), VAL_N, f, +$("sigma").value);
+  if (!keepGhosts) ghosts = [];
+}
+function currentModel() {
+  if (tab === "degree") return OF.fitOLS(data.xs, data.ys, +$("deg").value);
+  const lam = 10 ** +$("lam").value, d = +$("rdeg").value;
+  return tab === "ridge" ? OF.fitRidge(data.xs, data.ys, d, lam) : OF.fitLasso(data.xs, data.ys, d, lam);
+}
+const grid = Array.from({ length: 241 }, (_, i) => -1 + i / 120);
+function render() {
+  $("oN").textContent = $("n").value; $("oS").textContent = (+$("sigma").value).toFixed(2); $("oD").textContent = $("deg").value; $("oRD").textContent = $("rdeg").value;
+  $("oL").textContent = (10 ** +$("lam").value).toExponential(1);
+  $("degCtl").hidden = tab !== "degree"; $("regCtl").hidden = tab === "degree"; $("degSide").hidden = tab !== "degree"; $("regSide").hidden = tab === "degree";
+  const m = currentModel(), tr = OF.rmse(m, data.xs, data.ys), va = OF.rmse(m, val.xs, val.ys), sigma = +$("sigma").value;
+  $("kTr").textContent = tr.toFixed(3); $("kVa").textContent = va.toFixed(3);
+  const nz = m.beta.slice(1).filter(b => Math.abs(b) > 1e-12).length;
+  $("kX").textContent = tab === "lasso" ? `${nz} of ${m.d}` : m.d + 1; $("kXl").textContent = tab === "lasso" ? "non-zero coefficients" : "parameters";
+  const v = $("verdict");
+  const curve = tab === "degree" ? Array.from({ length: 16 }, (_, d) => OF.rmse(OF.fitOLS(data.xs, data.ys, d), val.xs, val.ys)) : null;
+  if (tab === "degree") {
+    const best = curve.indexOf(Math.min(...curve)), d = +$("deg").value;
+    v.className = "verdict " + (d < best ? "under" : d > best && va > 1.15 * curve[best] ? "over" : "right");
+    v.textContent = d < best ? `Underfitting: degree ${d} is too simple to follow the curve (both errors are high).`
+      : d > best && va > 1.15 * curve[best] ? `Overfitting: training RMSE ${tr.toFixed(3)} but validation ${va.toFixed(3)}. It's fitting the noise.${d + 1 >= data.xs.length ? ` With ${d + 1} parameters and ${data.xs.length} points it can pass through every point.` : ""}`
+      : `About right: validation error is near its minimum (degree ${best}). Expect around σ = ${sigma.toFixed(2)} at best.`;
+  } else {
+    v.className = "verdict " + (va > 1.15 * Math.min(...lamGrid().map(l => l.va)) ? (10 ** +$("lam").value > bestLam() ? "under" : "over") : "right");
+    v.textContent = v.className.includes("over") ? "λ too small: the degree-" + m.d + " polynomial still wiggles through the noise." : v.className.includes("under") ? "λ too large: coefficients are crushed and the fit flattens out (underfitting)." : "Good λ: the penalty removes the wiggles and keeps the shape.";
+  }
+  drawPlot(m);
+  if (tab === "degree") drawVCurve(curve); else drawReg(m);
+}
+function drawPlot(m) {
+  const svg = $("plot"), W = 560, H = 340, L = 40, R = 10, T = 10, B = 26;
+  const allY = data.ys.concat(val.ys), lo = Math.min(...allY) - 0.3, hi = Math.max(...allY) + 0.3;
+  const X = x => L + (x + 1) / 2 * (W - L - R), span = hi - lo, Y = y => T + (hi - Math.max(lo - 3 * span, Math.min(hi + 3 * span, y))) / span * (H - T - B);
+  const f = OF.CURVES[$("curve").value]; let s = `<defs><clipPath id="pc"><rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}"/></clipPath></defs>`;
+  for (let k = Math.ceil(lo); k <= Math.floor(hi); k++) s += `<line x1="${L}" x2="${W - R}" y1="${Y(k)}" y2="${Y(k)}" stroke="var(--line)"/><text x="${L - 5}" y="${Y(k) + 4}" text-anchor="end">${k}</text>`;
+  [-1, -0.5, 0, 0.5, 1].forEach(x => (s += `<text x="${X(x)}" y="${H - 8}" text-anchor="middle">${x}</text>`));
+  val.xs.forEach((x, i) => (s += `<circle cx="${X(x)}" cy="${Y(val.ys[i])}" r="2" fill="var(--val)" opacity=".28"/>`));
+  const line = ys => grid.map((x, i) => (i ? "L" : "M") + X(x).toFixed(1) + " " + Y(ys[i]).toFixed(1)).join(" ");
+  s += `<g clip-path="url(#pc)">`;
+  if ($("ghosts").checked) ghosts.forEach(g => (s += `<path d="${line(g)}" fill="none" stroke="var(--fit)" stroke-width="1.2" opacity=".22"/>`));
+  s += `<path d="${line(grid.map(f))}" fill="none" stroke="var(--true)" stroke-width="2" stroke-dasharray="6 4"/>`;
+  s += `<path d="${line(OF.predict(m, grid))}" fill="none" stroke="var(--fit)" stroke-width="2.6"/></g>`;
+  data.xs.forEach((x, i) => (s += `<circle cx="${X(x)}" cy="${Y(data.ys[i])}" r="4.5" fill="var(--train)" stroke="var(--panel)" stroke-width="1.5"/>`));
+  svg.innerHTML = s;
+}
+function logAxis(svg, W, H, m, xmax, vals, xlab, xtick) {
+  const lo = Math.log10(Math.max(1e-3, Math.min(...vals) * 0.8)), hi = Math.log10(Math.max(...vals) * 1.25);
+  const Y = v => m.t + (hi - Math.log10(Math.max(v, 1e-3))) / (hi - lo) * (H - m.t - m.b); let s = "";
+  [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 1000].forEach(t => { const l = Math.log10(t); if (l >= lo && l <= hi) s += `<line x1="${m.l}" x2="${W - m.r}" y1="${Y(t)}" y2="${Y(t)}" stroke="var(--line)"/><text x="${m.l - 5}" y="${Y(t) + 4}" text-anchor="end">${t}</text>`; });
+  s += `<text x="${(m.l + W - m.r) / 2}" y="${H - 2}" text-anchor="middle">${xlab}</text>`;
+  return { Y, s };
+}
+function drawVCurve(curve) {
+  const svg = $("vcurve"), W = 440, H = 230, m = { l: 40, r: 10, t: 10, b: 30 }, d = +$("deg").value, sigma = +$("sigma").value;
+  const train = Array.from({ length: 16 }, (_, k) => Math.max(1e-3, OF.rmse(OF.fitOLS(data.xs, data.ys, k), data.xs, data.ys)));
+  const a = logAxis(svg, W, H, m, 15, train.concat(curve, [sigma]), "polynomial degree"), X = k => m.l + k / 15 * (W - m.l - m.r);
+  let s = a.s; for (let k = 0; k <= 15; k += 1) s += `<text x="${X(k)}" y="${H - m.b + 14}" text-anchor="middle">${k}</text>`;
+  s += `<line x1="${m.l}" x2="${W - m.r}" y1="${a.Y(sigma)}" y2="${a.Y(sigma)}" stroke="var(--muted)" stroke-dasharray="3 3"/>`;
+  s += `<rect x="${X(d) - 9}" y="${m.t}" width="18" height="${H - m.t - m.b}" fill="var(--fit)" opacity=".1"/>`;
+  [[train, "var(--train)"], [curve, "var(--val)"]].forEach(([ys, c]) => { s += `<path d="${ys.map((v, k) => (k ? "L" : "M") + X(k) + " " + a.Y(v)).join(" ")}" fill="none" stroke="${c}" stroke-width="2.3"/>`; ys.forEach((v, k) => (s += `<circle cx="${X(k)}" cy="${a.Y(v)}" r="2.6" fill="${c}"/>`)); });
+  svg.innerHTML = s;
+  const best = curve.indexOf(Math.min(...curve));
+  $("vtable").innerHTML = "<tr><th>Degree</th><th>Parameters</th><th>Train RMSE</th><th>Validation RMSE</th></tr>" +
+    train.map((t, k) => `<tr class="${k === d ? "cur" : ""} ${k === best ? "best" : ""}"><td>${k}</td><td>${k + 1}</td><td>${t < 0.0015 ? "≈ 0" : t.toFixed(3)}</td><td>${curve[k] > 99 ? curve[k].toExponential(1) : curve[k].toFixed(3)}</td></tr>`).join("");
+}
+let lamCache = { key: "", rows: [] };
+function lamGrid() {
+  const key = [tab, $("rdeg").value, seed, $("n").value, $("sigma").value, $("curve").value].join("|");
+  if (lamCache.key === key) return lamCache.rows;
+  const rows = []; let warm;
+  for (let e = 1; e >= -6 - 1e-9; e -= 0.1) {                      // large -> small lambda with warm starts
+    const lam = 10 ** e, m = tab === "ridge" ? OF.fitRidge(data.xs, data.ys, +$("rdeg").value, lam) : OF.fitLasso(data.xs, data.ys, +$("rdeg").value, lam, warm);
+    warm = m.beta; rows.push({ e, lam, beta: m.beta, tr: OF.rmse(m, data.xs, data.ys), va: OF.rmse(m, val.xs, val.ys) });
+  }
+  rows.reverse(); lamCache = { key, rows }; return rows;
+}
+const bestLam = () => { const g = lamGrid(); return g.reduce((b, r) => (r.va < b.va ? r : b)).lam; };
+function drawReg(m) {
+  const d = m.d, b = m.beta.slice(1), rows = lamGrid(), e = +$("lam").value;
+  $("coefTitle").textContent = `${tab === "ridge" ? "Ridge" : "LASSO"} coefficients (standardized Legendre terms 1–${d})`;
+  // bar chart
+  let svg = $("coefs"), W = 440, H = 200, L = 36, R = 8, T = 10, B = 22; const mx = Math.max(0.5, ...rows.map(r => Math.max(...r.beta.slice(1).map(Math.abs))).slice(0, 8)) ;
+  const lim = Math.max(...b.map(Math.abs), 0.05), Y = v => T + (lim - v) / (2 * lim) * (H - T - B), bw = (W - L - R) / d;
+  let s = `<line x1="${L}" x2="${W - R}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--muted)"/><text x="${L - 4}" y="${Y(lim) + 8}" text-anchor="end">${lim.toFixed(2)}</text><text x="${L - 4}" y="${Y(-lim)}" text-anchor="end">${(-lim).toFixed(2)}</text>`;
+  b.forEach((v, j) => { const x = L + j * bw + bw * 0.15, zero = Math.abs(v) < 1e-12;
+    s += zero ? `<text x="${x + bw * 0.35}" y="${Y(0) - 4}" text-anchor="middle" style="fill:var(--zero);font-weight:700">0</text>` : `<rect x="${x}" y="${Math.min(Y(v), Y(0))}" width="${bw * 0.7}" height="${Math.abs(Y(v) - Y(0))}" fill="var(--fit)" rx="2"/>`;
+    s += `<text x="${x + bw * 0.35}" y="${H - 6}" text-anchor="middle">${j + 1}</text>`; });
+  svg.innerHTML = s;
+  // path
+  svg = $("path"); W = 440; H = 210; const m2 = { l: 40, r: 10, t: 10, b: 28 };
+  const pl = Math.max(...rows.map(r => Math.max(...r.beta.slice(1).map(Math.abs))));
+  const cl = Math.min(pl, 3 * Math.max(...rows.filter(r => r.e > -3).map(r => Math.max(...r.beta.slice(1).map(Math.abs))), 0.5));
+  const PX = e2 => m2.l + (e2 + 6) / 7 * (W - m2.l - m2.r), PY = v => m2.t + (cl - Math.max(-cl, Math.min(cl, v))) / (2 * cl) * (H - m2.t - m2.b);
+  s = `<line x1="${m2.l}" x2="${W - m2.r}" y1="${PY(0)}" y2="${PY(0)}" stroke="var(--muted)"/>`;
+  for (let k = -6; k <= 1; k++) s += `<text x="${PX(k)}" y="${H - m2.b + 14}" text-anchor="middle">1e${k}</text>`;
+  s += `<text x="${(m2.l + W - m2.r) / 2}" y="${H - 2}" text-anchor="middle">λ (log scale) →  stronger penalty</text>`;
+  for (let j = 1; j <= d; j++) { const hue = Math.round(360 * j / (d + 1)); s += `<path d="${rows.map((r, i) => (i ? "L" : "M") + PX(r.e).toFixed(1) + " " + PY(r.beta[j]).toFixed(1)).join(" ")}" fill="none" stroke="hsl(${hue} 60% 50%)" stroke-width="1.5"/>`; }
+  s += `<line x1="${PX(e)}" x2="${PX(e)}" y1="${m2.t}" y2="${H - m2.b}" stroke="var(--ink)" stroke-dasharray="3 3"/>`;
+  svg.innerHTML = s;
+  // RMSE vs lambda
+  svg = $("lcurve"); H = 150; const m3 = { l: 40, r: 10, t: 8, b: 26 };
+  const a = logAxis(svg, W, H, m3, 7, rows.flatMap(r => [r.tr, r.va]), "λ (log scale)");
+  s = a.s; [[r => r.tr, "var(--train)"], [r => r.va, "var(--val)"]].forEach(([g, c]) => (s += `<path d="${rows.map((r, i) => (i ? "L" : "M") + PX(r.e).toFixed(1) + " " + a.Y(g(r)).toFixed(1)).join(" ")}" fill="none" stroke="${c}" stroke-width="2"/>`));
+  s += `<line x1="${PX(e)}" x2="${PX(e)}" y1="${m3.t}" y2="${H - m3.b}" stroke="var(--ink)" stroke-dasharray="3 3"/>`;
+  svg.innerHTML = s;
+  const bl = bestLam(), nz = b.filter(v => Math.abs(v) > 1e-12).length;
+  $("regNote").innerHTML = (tab === "ridge"
+    ? `Ridge shrinks <b>every</b> coefficient smoothly toward zero but (almost) never exactly to zero. Here all ${d} stay non-zero.`
+    : `LASSO's soft-thresholding sets small coefficients <b>exactly</b> to zero: ${d - nz} of ${d} are zero at this λ, so it also selects features.`) +
+    ` Lowest validation RMSE at λ ≈ ${bl.toExponential(1)}. Orange line = validation, blue = training.`;
+}
+document.querySelectorAll("[role=tab]").forEach(b => b.addEventListener("click", () => { tab = b.dataset.tab; document.querySelectorAll("[role=tab]").forEach(x => x.setAttribute("aria-selected", x === b)); render(); }));
+["deg", "rdeg", "lam"].forEach(id => $(id).addEventListener("input", render));
+["n", "sigma", "curve"].forEach(id => $(id).addEventListener("input", () => { gen(false); render(); }));
+$("ghosts").addEventListener("change", render);
+$("newData").addEventListener("click", () => {
+  const m = currentModel(); ghosts.push(OF.predict(m, grid)); if (ghosts.length > 12) ghosts.shift();
+  seed = (Math.random() * 2 ** 32) >>> 0; gen(true); render();
+});
+const qs = new URLSearchParams(location.search);
+if (qs.has("tab")) { tab = qs.get("tab"); document.querySelectorAll("[role=tab]").forEach(x => x.setAttribute("aria-selected", x.dataset.tab === tab)); }
+if (qs.has("deg")) $("deg").value = qs.get("deg");
+if (qs.has("lam")) $("lam").value = qs.get("lam");
+gen(false);
+if (qs.has("ghosts")) { for (let i = 0; i < +qs.get("ghosts"); i++) { seed = 1000 + i; gen(true); ghosts.push(OF.predict(currentModel(), grid)); } seed = 7; gen(true); }
+render();
+</script>
+</body>
+</html>
